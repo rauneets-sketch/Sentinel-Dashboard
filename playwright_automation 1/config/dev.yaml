@@ -1,0 +1,18 @@
+environment: dev
+baseUrl: https://dev.example.com
+api:
+  baseUrl: https://api-dev.example.com
+  timeout: 30000
+browser:
+  headless: false
+  timeout: 30000
+  viewport:
+    width: 1920
+    height: 1080
+mobile:
+  platform: Android
+  deviceName: Pixel 5
+  appPackage: com.example.app.dev
+logging:
+  level: debug
+  file: logs/dev.log

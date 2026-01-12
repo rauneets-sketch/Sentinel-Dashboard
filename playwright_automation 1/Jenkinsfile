@@ -1,0 +1,202 @@
+pipeline {
+    agent { label 'Jenkins-Slave' }
+    
+    triggers {
+        cron('0 * * * *') // Run every hour at minute 0
+    }
+    
+    options {
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+    
+    environment {
+        ENV = 'prod'
+        DOCKER_IMAGE = 'fnp-automation'
+        DOCKER_BUILDKIT = '0'
+        S3_BUCKET_NAME = 'fnp-test-reports'
+        AWS_REGION = 'us-east-1'
+        REPORT_PATH = 'latest-report'
+    }
+    
+    stages {
+        stage('Verify Agent') {
+            steps {
+                echo "Running on node: ${env.NODE_NAME}"
+                sh 'hostname'
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                sh '''
+                    # Remove ALL old fnp-automation images (all tags)
+                    docker images ${DOCKER_IMAGE} -q | xargs -r docker rmi -f || true
+                    
+                    # Clean dangling images
+                    docker image prune -f || true
+                    
+                    # Clean output directories
+                    rm -rf reports logs allure-results allure-report || true
+                    mkdir -p reports logs allure-results
+                '''
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                echo 'Build running on Jenkins slave'
+                sh '''
+                    export DOCKER_BUILDKIT=0
+                    docker build --no-cache -t ${DOCKER_IMAGE}:${BUILD_NUMBER} -t ${DOCKER_IMAGE}:latest .
+                '''
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                script {
+                    def status = sh(
+                        script: """
+                            docker run --rm \
+                                -v \${PWD}/reports:/workspace/reports \
+                                -v \${PWD}/logs:/workspace/logs \
+                                -v \${PWD}/allure-results:/workspace/allure-results \
+                                -e ENV=${ENV} \
+                                -e BUILD_NUMBER=${BUILD_NUMBER} \
+                                --memory=3g \
+                                --shm-size=1gb \
+                                ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        """,
+                        returnStatus: true
+                    )
+                    
+                    currentBuild.result = (status == 0) ? 'SUCCESS' : 'UNSTABLE'
+                    
+                    // Count screenshots
+                    sh '''
+                        echo "📸 Failure Screenshots:"
+                        SCREENSHOT_COUNT=$(ls -1 allure-results/*.png 2>/dev/null | wc -l)
+                        echo "Found $SCREENSHOT_COUNT failure screenshot(s)"
+                        ls -lh allure-results/*.png 2>/dev/null || echo "No failure screenshots (all tests passed!)"
+                    '''
+                }
+            }
+        }
+        
+        stage('Generate Allure Report') {
+            steps {
+                script {
+                    echo '📊 Generating Allure HTML report...'
+                    sh '''
+                        # Generate Allure report using Docker (includes screenshots)
+                        docker run --rm \
+                            -v ${PWD}/allure-results:/allure-results \
+                            -v ${PWD}/allure-report:/allure-report \
+                            frankescobar/allure-docker-service:2.24.0 \
+                            allure generate /allure-results --clean -o /allure-report || echo "Allure generation failed"
+                        
+                        # Verify report was generated
+                        if [ -f "allure-report/index.html" ]; then
+                            echo "✅ Allure report generated successfully"
+                            echo "📊 Report size: $(du -sh allure-report | cut -f1)"
+                        else
+                            echo "❌ Allure report generation failed"
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Upload to S3') {
+            steps {
+                script {
+                    echo '📤 Uploading Allure report to S3...'
+                    sh '''
+                        # Check if report exists
+                        if [ ! -f "allure-report/index.html" ]; then
+                            echo "❌ No Allure report to upload"
+                            exit 1
+                        fi
+                        
+                        # Clear old report from S3
+                        echo "🧹 Clearing old report from S3..."
+                        aws s3 rm s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ --recursive --quiet || true
+                        
+                        # Upload new report
+                        echo "📤 Uploading new report..."
+                        aws s3 cp allure-report/ s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ --recursive --quiet
+                        
+                        # Set proper content types
+                        aws s3 cp s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ \
+                            --recursive \
+                            --exclude "*" \
+                            --include "*.html" \
+                            --content-type "text/html" \
+                            --metadata-directive REPLACE \
+                            --quiet || true
+                        
+                        aws s3 cp s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ \
+                            --recursive \
+                            --exclude "*" \
+                            --include "*.css" \
+                            --content-type "text/css" \
+                            --metadata-directive REPLACE \
+                            --quiet || true
+                        
+                        aws s3 cp s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ s3://${S3_BUCKET_NAME}/${REPORT_PATH}/ \
+                            --recursive \
+                            --exclude "*" \
+                            --include "*.js" \
+                            --content-type "application/javascript" \
+                            --metadata-directive REPLACE \
+                            --quiet || true
+                        
+                        echo "✅ Upload complete!"
+                        echo "🌐 Report URL: https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${REPORT_PATH}/index.html"
+                    '''
+                }
+            }
+        }
+        
+        stage('Archive') {
+            steps {
+                // Archive only logs and cucumber reports (NOT screenshots/allure-results)
+                archiveArtifacts artifacts: 'reports/**,logs/**', allowEmptyArchive: true
+                
+                script {
+                    // Update Slack notification with S3 URL
+                    env.REPORT_URL = "https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${REPORT_PATH}/index.html"
+                    echo "📱 Slack will use S3 report URL: ${env.REPORT_URL}"
+                }
+            }
+        }
+        
+        stage('Cleanup Workspace') {
+            steps {
+                script {
+                    echo '🧹 Cleaning up workspace artifacts...'
+                    sh '''
+                        # Remove screenshots and allure artifacts from Jenkins workspace
+                        # These are now on S3, no need to keep locally
+                        rm -rf allure-results allure-report
+                        echo "✅ Workspace cleaned - screenshots only on S3"
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            sh '''
+                # Clean up Docker images
+                docker image prune -f || true
+                
+                # Final cleanup - ensure no screenshots left in workspace
+                rm -rf allure-results allure-report || true
+            '''
+        }
+    }
+}

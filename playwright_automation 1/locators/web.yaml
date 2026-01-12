@@ -1,0 +1,65 @@
+loginButton:
+  web:
+    type: "id"
+    value: "login-btn"
+
+usernameField:
+  web:
+    type: "id"
+    value: "username"
+
+passwordField:
+  web:
+    type: "id"
+    value: "password"
+
+# DA Page Modification Locators
+fnpLuxeLink:
+  web:
+    type: "role"
+    value: "link[name='FNP Luxe FNP Luxe']"
+
+sameDayLuxuryLink:
+  web:
+    type: "role"
+    value: "link[name='Same Day Luxury Gifts Same Day']"
+
+goldenHourProduct:
+  web:
+    type: "role"
+    value: "link[name='The Golden Hour 1 2 3 4 5 6']"
+
+laterButton:
+  web:
+    type: "text"
+    value: "Later"
+
+deliveryInfoChange:
+  web:
+    type: "testid"
+    value: "delivery-info-change"
+
+incrementBtn:
+  web:
+    type: "testid"
+    value: "incrementBtn"
+
+newAddressBtn:
+  web:
+    type: "testid"
+    value: "newAddress"
+
+senderNameField:
+  web:
+    type: "testid"
+    value: "senderName"
+
+saveBtn:
+  web:
+    type: "testid"
+    value: "saveBtn"
+
+editBtn:
+  web:
+    type: "testid"
+    value: "editBtn"

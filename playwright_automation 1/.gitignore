@@ -1,0 +1,198 @@
+# Dependencies
+node_modules/
+yarn.lock
+pnpm-lock.yaml
+
+# Test results and reports
+allure-results/
+allure-report/
+reports/
+test-results/
+playwright-report/
+cucumber-reports/
+screenshots/
+videos/
+coverage/
+.nyc_output/
+*.html
+*.json
+!package.json
+!package-lock.json
+!cucumber.config.js
+!locators/*.json
+!**/locators.json
+
+# Log files
+*.log
+logs/
+test-output.log
+journey*.log
+complete-*.log
+final*.log
+test_*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+debug.log
+error.log
+combined.log
+test-execution.log
+
+# Debug screenshots and images (except test assets)
+debug-*.png
+visual_*.png
+coupon_*.png
+fnp-*.png
+message-*.png
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+!test-assets/*.png
+!test-assets/*.jpg
+!test-assets/*.jpeg
+!test-assets/**/*.png
+!test-assets/**/*.jpg
+
+# Video attachments
+*.webm
+*.mp4
+*.avi
+*.mov
+!test-assets/*.mp4
+!test-assets/*.webm
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+.history/
+.metals/
+.bloop/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.example
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+.cache/
+.temp/
+tmp/
+temp/
+
+# Build artifacts
+dist/
+build/
+out/
+target/
+
+# Python (if any helper scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+venv/
+env/
+.venv/
+
+# Playwright specific
+playwright/.auth/
+playwright-report/
+test-results/
+trace.zip
+*.trace
+*.har
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Process ID files
+*.pid
+test_pid.txt
+
+# Crawler and debug files
+crawl-*.py
+debug-*.py
+discover-*.py
+live-*.py
+manual-*.py
+
+# Allure and test artifacts
+.allure/
+allure-results/
+allure-report/
+
+# Chrome/Browser artifacts
+.chrome/
+.firefox/
+.webkit/
+
+# Sensitive data
+credentials.json
+secrets.json
+config.json
+CREDENTIALS_AND_LINKS.md
+!cucumber.config.js
+!playwright.config.js
+
+# Generated files
+generated/
+auto-generated/
+
+# Docker
+docker-compose.override.yml
+
+# Maven/Java (if any)
+target/
+.m2/
+*.jar
+*.war
+*.ear
+
+# Gradle
+.gradle/
+gradle/
+gradlew
+gradlew.bat
+
+# Misc
+*.orig
+*.rej
+.sass-cache/
+.connect.lock
+.typings/
+.tsbuildinfo
+
+# Debug and test files
+debug-test.js
+

@@ -1,0 +1,21 @@
+{
+  "name": "fnp-automation",
+  "version": "1.0.0",
+  "description": "FNP Automation Framework - Playwright + Cucumber",
+  "scripts": {
+    "test": "node run-tests.js"
+  },
+  "dependencies": {
+    "@cucumber/cucumber": "^10.0.0",
+    "@playwright/test": "^1.57.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "imap": "^0.8.17",
+    "mailparser": "^3.6.5",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "yaml": "^2.3.0"
+  }
+}

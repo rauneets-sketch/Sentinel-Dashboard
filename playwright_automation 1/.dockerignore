@@ -1,0 +1,12 @@
+node_modules
+.git
+reports
+screenshots
+videos
+logs
+allure-results
+allure-report
+*.log
+*.md
+.env*
+*.sh

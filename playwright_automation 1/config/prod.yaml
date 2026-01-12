@@ -1,0 +1,18 @@
+environment: prod
+baseUrl: https://prod.example.com
+api:
+  baseUrl: https://api.example.com
+  timeout: 30000
+browser:
+  headless: true
+  timeout: 30000
+  viewport:
+    width: 1920
+    height: 1080
+mobile:
+  platform: Android
+  deviceName: Pixel 5
+  appPackage: com.example.app
+logging:
+  level: error
+  file: logs/prod.log
