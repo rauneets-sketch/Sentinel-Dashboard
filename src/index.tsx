@@ -108,15 +108,25 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   },
 });
 
-// API Routes - Fetch real data from Supabase for DESKTOP ONLY
-// Other platforms (mobile, android, oms, ios) use mock data
+// Import enhanced test data service
+import { 
+  fetchSystemHealth, 
+  fetchLatestSystemRun, 
+  fetchCorrelatedRuns, 
+  fetchTabPerformance, 
+  fetchRecentFailures 
+} from './services/testDataService';
+
+// API Routes - Enhanced to support OMS and Partner Panel data fetching
 app.get("/api/test-results", async (c) => {
   try {
-    // Get mock data for other platforms
+    // Get mock data for mobile and ios platforms
     const mockResults = generateMockTestResults();
     
     let latestRun: any = null;
     let journeys: any[] = [];
+    let omsData: any = null;
+    let partnerPanelData: any = null;
 
     // Get today's date range (start and end of today in UTC)
     const today = new Date();
@@ -125,36 +135,72 @@ app.get("/api/test-results", async (c) => {
     
     console.log(`Fetching today's data from ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
 
+    // DESKTOP SITE DATA - Find the real Desktop Site data (not OMS or Partner Panel)
     // PRIORITY 1: Try raw_test_logs table first (this is where Playwright sends data)
-    console.log('Checking raw_test_logs table for today...');
+    console.log('Checking raw_test_logs table for Desktop Site data...');
     const { data: rawLogs, error: rawError } = await supabase
       .from('raw_test_logs')
       .select('*')
       .gte('executed_at', startOfToday.toISOString())
       .lt('executed_at', endOfToday.toISOString())
-      .order('executed_at', { ascending: false })
-      .limit(1);
+      .order('executed_at', { ascending: false });
 
     if (rawError) {
       console.error('Error fetching raw_test_logs:', rawError);
     }
 
+    // Debug: Log all available systems to understand what's in the database
     if (rawLogs && rawLogs.length > 0) {
-      const rawPayload = rawLogs[0].raw_payload;
-      console.log('Found today\'s raw log data, run_id:', rawPayload?.run_id);
-      console.log('Executed at:', rawLogs[0].executed_at);
-      console.log('Journeys count:', rawPayload?.journeys?.length || 0);
+      console.log('📋 Available systems in raw_test_logs:');
+      rawLogs.forEach((log, index) => {
+        const system = log.raw_payload?.metadata?.system;
+        const journeyCount = log.raw_payload?.journeys?.length || 0;
+        console.log(`  ${index + 1}. System: ${system || 'NO_SYSTEM'}, Journeys: ${journeyCount}, Run ID: ${log.raw_payload?.run_id}`);
+      });
+    }
+
+    // Look for Desktop Site data - it might not have system metadata or could be the one with most journeys
+    let desktopRawLog = null;
+    if (rawLogs && rawLogs.length > 0) {
+      // First try to find data without system metadata (likely Desktop Site)
+      desktopRawLog = rawLogs.find(log => {
+        const system = log.raw_payload?.metadata?.system;
+        return !system;
+      });
+      
+      // If not found, look for the one with the most journeys (likely Desktop Site with 19 journeys)
+      if (!desktopRawLog) {
+        desktopRawLog = rawLogs.reduce((max, log) => {
+          const journeyCount = log.raw_payload?.journeys?.length || 0;
+          const maxJourneyCount = max?.raw_payload?.journeys?.length || 0;
+          const system = log.raw_payload?.metadata?.system;
+          
+          // Skip OMS and Partner Panel systems
+          if (system === 'OMS' || system === 'PARTNER_PANEL') {
+            return max;
+          }
+          
+          return journeyCount > maxJourneyCount ? log : max;
+        }, null);
+      }
+    }
+
+    if (desktopRawLog) {
+      const rawPayload = desktopRawLog.raw_payload;
+      const journeyCount = rawPayload?.journeys?.length || 0;
+      console.log(`Found Desktop Site raw log data with ${journeyCount} journeys, run_id:`, rawPayload?.run_id);
+      console.log('Executed at:', desktopRawLog.executed_at);
       
       // Extract journeys directly from raw_payload (matching Slack format exactly)
       journeys = rawPayload?.journeys || [];
       
       latestRun = {
-        run_id: rawPayload?.run_id || rawLogs[0].run_id,
+        run_id: rawPayload?.run_id || desktopRawLog.run_id,
         framework: rawPayload?.framework || 'playwright',
         suite_name: rawPayload?.suite_name || 'FNP Automation Framework',
         environment: rawPayload?.environment || 'dev',
         platform: rawPayload?.platform || 'web',
-        executed_at: rawPayload?.executed_at || rawLogs[0].executed_at,
+        executed_at: rawPayload?.executed_at || desktopRawLog.executed_at,
         completed_at: rawPayload?.completed_at,
         total_runtime_ms: rawPayload?.total_runtime_ms || 0,
         total_journeys: rawPayload?.summary?.total_journeys || journeys.length,
@@ -171,20 +217,38 @@ app.get("/api/test-results", async (c) => {
       };
     }
 
-    // PRIORITY 2: If no raw logs, try test_runs + journeys tables for today
+    // PRIORITY 2: If no raw logs, try test_runs + journeys tables for Desktop Site
     if (!latestRun) {
-      console.log('No raw_test_logs found for today, checking test_runs table...');
+      console.log('No Desktop Site raw_test_logs found, checking test_runs table...');
       const { data: testRuns } = await supabase
         .from('test_runs')
         .select('*')
         .gte('executed_at', startOfToday.toISOString())
         .lt('executed_at', endOfToday.toISOString())
-        .order('executed_at', { ascending: false })
-        .limit(1);
+        .order('executed_at', { ascending: false });
 
+      // Debug: Log all available systems in test_runs
       if (testRuns && testRuns.length > 0) {
-        latestRun = testRuns[0];
-        console.log('Found test_run:', latestRun.run_id);
+        console.log('📋 Available systems in test_runs:');
+        testRuns.forEach((run, index) => {
+          const system = run.metadata?.system;
+          console.log(`  ${index + 1}. System: ${system || 'NO_SYSTEM'}, Journeys: ${run.total_journeys}, Run ID: ${run.run_id}`);
+        });
+      }
+
+      // Look for Desktop Site runs - exclude OMS and Partner Panel
+      const desktopRuns = testRuns?.filter(run => {
+        const system = run.metadata?.system;
+        return system !== 'OMS' && system !== 'PARTNER_PANEL';
+      }) || [];
+
+      if (desktopRuns.length > 0) {
+        // Take the one with most journeys (likely the Desktop Site with 19 journeys)
+        latestRun = desktopRuns.reduce((max, run) => {
+          return (run.total_journeys || 0) > (max.total_journeys || 0) ? run : max;
+        });
+        
+        console.log(`Found Desktop Site test_run with ${latestRun.total_journeys} journeys:`, latestRun.run_id);
         
         // Get journeys from journeys table
         const { data: journeyData } = await supabase
@@ -205,14 +269,200 @@ app.get("/api/test-results", async (c) => {
             journey.steps = stepsData || [];
           }
           journeys = journeyData;
+          console.log(`Loaded ${journeys.length} journeys for Desktop Site`);
         }
       }
     }
 
-    // If still no data, return mock data for all platforms
+    // FETCH OMS DATA
+    console.log('Fetching OMS data...');
+    try {
+      const omsRunData = await fetchLatestSystemRun('OMS');
+      if (omsRunData && omsRunData.latestRun) {
+        const omsJourneys = omsRunData.journeys;
+        const omsModules = omsJourneys.map((journey: any) => {
+          const steps = journey.steps || [];
+          const passedSteps = steps.filter((s: any) => s.status === 'PASSED').length;
+          const failedSteps = steps.filter((s: any) => s.status === 'FAILED').length;
+          
+          return {
+            journeyNumber: journey.journey_number,
+            name: journey.journey_name || `Journey ${journey.journey_number}`,
+            description: journey.journey_description,
+            status: journey.status,
+            statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+            totalSteps: steps.length || journey.total_steps || 0,
+            passed: passedSteps || journey.passed_steps || 0,
+            failed: failedSteps || journey.failed_steps || 0,
+            duration: Math.round((journey.duration_ms || 0) / 1000),
+            durationFormatted: formatDuration(journey.duration_ms || 0),
+            failureReason: journey.failure_reason,
+            errorType: journey.error_type,
+            errorMessage: journey.error_message,
+            steps: steps.map((step: any, index: number) => ({
+              stepNumber: step.step_number || index + 1,
+              name: step.step_name || 'Unknown Step',
+              status: step.status,
+              statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+              duration: step.duration_ms || 0,
+              durationFormatted: formatDuration(step.duration_ms || 0),
+              timestamp: step.start_time,
+              errorType: step.error_type,
+              errorMessage: step.error_message,
+              apiCalls: step.api_calls || []
+            }))
+          };
+        });
+
+        // Calculate OMS totals
+        const omsRun = omsRunData.latestRun;
+        const totalOmsJourneys = omsJourneys.length;
+        const passedOmsJourneys = omsJourneys.filter((j: any) => j.status === 'PASSED').length;
+        const failedOmsJourneys = omsJourneys.filter((j: any) => j.status === 'FAILED').length;
+        
+        let totalOmsSteps = 0, passedOmsSteps = 0, failedOmsSteps = 0;
+        omsJourneys.forEach((j: any) => {
+          const steps = j.steps || [];
+          totalOmsSteps += steps.length;
+          passedOmsSteps += steps.filter((s: any) => s.status === 'PASSED').length;
+          failedOmsSteps += steps.filter((s: any) => s.status === 'FAILED').length;
+        });
+
+        // Use summary from run if available
+        if (omsRun.total_steps > 0) {
+          totalOmsSteps = omsRun.total_steps;
+          passedOmsSteps = omsRun.passed_steps;
+          failedOmsSteps = omsRun.failed_steps;
+        }
+
+        const omsSuccessRate = totalOmsSteps > 0 ? ((passedOmsSteps / totalOmsSteps) * 100).toFixed(1) : '0';
+
+        omsData = {
+          total: totalOmsJourneys,
+          passed: passedOmsJourneys,
+          failed: failedOmsJourneys,
+          skipped: omsRun.skipped_journeys || 0,
+          totalSteps: totalOmsSteps,
+          passedSteps: passedOmsSteps,
+          failedSteps: failedOmsSteps,
+          successRate: parseFloat(omsSuccessRate),
+          duration: Math.round((omsRun.total_runtime_ms || 0) / 1000),
+          durationFormatted: formatDuration(omsRun.total_runtime_ms || 0),
+          lastRun: omsRun.executed_at,
+          buildNumber: omsRun.build_number,
+          reportUrl: omsRun.report_url,
+          environment: omsRun.environment || 'prod',
+          modules: omsModules,
+          overallStatus: failedOmsJourneys === 0 ? 'ALL SYSTEMS GO ✅' : 'ISSUES DETECTED ❌',
+          isSuccess: failedOmsJourneys === 0 && passedOmsJourneys > 0
+        };
+        console.log('OMS data prepared:', { totalJourneys: totalOmsJourneys, modulesCount: omsModules.length });
+      }
+    } catch (error) {
+      console.error('Error fetching OMS data:', error);
+    }
+
+    // FETCH PARTNER PANEL DATA
+    console.log('Fetching Partner Panel data...');
+    try {
+      const ppRunData = await fetchLatestSystemRun('PARTNER_PANEL');
+      if (ppRunData && ppRunData.latestRun) {
+        const ppJourneys = ppRunData.journeys;
+        const ppModules = ppJourneys.map((journey: any) => {
+          const steps = journey.steps || [];
+          const passedSteps = steps.filter((s: any) => s.status === 'PASSED').length;
+          const failedSteps = steps.filter((s: any) => s.status === 'FAILED').length;
+          
+          return {
+            journeyNumber: journey.journey_number,
+            name: journey.journey_name || `Journey ${journey.journey_number}`,
+            description: journey.journey_description,
+            status: journey.status,
+            statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+            totalSteps: steps.length || journey.total_steps || 0,
+            passed: passedSteps || journey.passed_steps || 0,
+            failed: failedSteps || journey.failed_steps || 0,
+            duration: Math.round((journey.duration_ms || 0) / 1000),
+            durationFormatted: formatDuration(journey.duration_ms || 0),
+            failureReason: journey.failure_reason,
+            errorType: journey.error_type,
+            errorMessage: journey.error_message,
+            steps: steps.map((step: any, index: number) => ({
+              stepNumber: step.step_number || index + 1,
+              name: step.step_name || 'Unknown Step',
+              status: step.status,
+              statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+              duration: step.duration_ms || 0,
+              durationFormatted: formatDuration(step.duration_ms || 0),
+              timestamp: step.start_time,
+              errorType: step.error_type,
+              errorMessage: step.error_message,
+              apiCalls: step.api_calls || []
+            }))
+          };
+        });
+
+        // Calculate Partner Panel totals
+        const ppRun = ppRunData.latestRun;
+        const totalPpJourneys = ppJourneys.length;
+        const passedPpJourneys = ppJourneys.filter((j: any) => j.status === 'PASSED').length;
+        const failedPpJourneys = ppJourneys.filter((j: any) => j.status === 'FAILED').length;
+        
+        let totalPpSteps = 0, passedPpSteps = 0, failedPpSteps = 0;
+        ppJourneys.forEach((j: any) => {
+          const steps = j.steps || [];
+          totalPpSteps += steps.length;
+          passedPpSteps += steps.filter((s: any) => s.status === 'PASSED').length;
+          failedPpSteps += steps.filter((s: any) => s.status === 'FAILED').length;
+        });
+
+        // Use summary from run if available
+        if (ppRun.total_steps > 0) {
+          totalPpSteps = ppRun.total_steps;
+          passedPpSteps = ppRun.passed_steps;
+          failedPpSteps = ppRun.failed_steps;
+        }
+
+        const ppSuccessRate = totalPpSteps > 0 ? ((passedPpSteps / totalPpSteps) * 100).toFixed(1) : '0';
+
+        partnerPanelData = {
+          total: totalPpJourneys,
+          passed: passedPpJourneys,
+          failed: failedPpJourneys,
+          skipped: ppRun.skipped_journeys || 0,
+          totalSteps: totalPpSteps,
+          passedSteps: passedPpSteps,
+          failedSteps: failedPpSteps,
+          successRate: parseFloat(ppSuccessRate),
+          duration: Math.round((ppRun.total_runtime_ms || 0) / 1000),
+          durationFormatted: formatDuration(ppRun.total_runtime_ms || 0),
+          lastRun: ppRun.executed_at,
+          buildNumber: ppRun.build_number,
+          reportUrl: ppRun.report_url,
+          environment: ppRun.environment || 'prod',
+          modules: ppModules,
+          overallStatus: failedPpJourneys === 0 ? 'ALL SYSTEMS GO ✅' : 'ISSUES DETECTED ❌',
+          isSuccess: failedPpJourneys === 0 && passedPpJourneys > 0
+        };
+        console.log('Partner Panel data prepared:', { totalJourneys: totalPpJourneys, modulesCount: ppModules.length });
+      }
+    } catch (error) {
+      console.error('Error fetching Partner Panel data:', error);
+    }
+
+    // DESKTOP SITE DATA PROCESSING (existing logic continues...)
+    // If still no desktop data, return mock data for desktop
     if (!latestRun || journeys.length === 0) {
-      console.log('No Supabase data found for today, using mock data for all platforms');
-      return c.json(mockResults);
+      console.log('No Supabase data found for today, using mock data for desktop');
+      const desktopData = mockResults.desktop;
+      
+      return c.json({
+        desktop: desktopData,
+        mobile: mockResults.mobile,
+        android: partnerPanelData || mockResults.android, // Use Partner Panel data for android tab
+        ios: mockResults.ios,
+        oms: omsData || mockResults.oms, // Use OMS data or fallback to mock
+      });
     }
 
     // Transform journeys to match Slack notification format exactly
@@ -329,19 +579,71 @@ app.get("/api/test-results", async (c) => {
       dataDate: latestRun.executed_at
     });
 
-    // Return Supabase data for Desktop, mock data for all other platforms
+    // Return Supabase data for Desktop, OMS, and Partner Panel; mock data for mobile and ios
     return c.json({
       desktop: desktopData,  // Real Supabase data with steps
       mobile: mockResults.mobile,  // Mock data
-      android: mockResults.android,  // Mock data
+      android: partnerPanelData || mockResults.android,  // Real Partner Panel data or mock
       ios: mockResults.ios,  // Mock data
-      oms: mockResults.oms,  // Mock data
+      oms: omsData || mockResults.oms,  // Real OMS data or mock
     });
   } catch (error) {
     console.error('Error in /api/test-results:', error);
     // Fallback to mock data on error
     const results = generateMockTestResults();
     return c.json(results);
+  }
+});
+
+// New API endpoint: Get system health metrics for OMS and Partner Panel
+app.get("/api/system-health", async (c) => {
+  try {
+    const healthData = await fetchSystemHealth();
+    return c.json(healthData);
+  } catch (error) {
+    console.error('Error in /api/system-health:', error);
+    return c.json({ error: "Failed to fetch system health" }, 500);
+  }
+});
+
+// New API endpoint: Get correlated runs (OMS + Partner Panel)
+app.get("/api/correlated-runs", async (c) => {
+  try {
+    const limit = parseInt(c.req.query('limit') || '10');
+    const correlatedRuns = await fetchCorrelatedRuns(limit);
+    return c.json(correlatedRuns);
+  } catch (error) {
+    console.error('Error in /api/correlated-runs:', error);
+    return c.json({ error: "Failed to fetch correlated runs" }, 500);
+  }
+});
+
+// New API endpoint: Get tab performance for OMS or Partner Panel
+app.get("/api/tab-performance/:system", async (c) => {
+  try {
+    const system = c.req.param("system").toUpperCase();
+    if (system !== 'OMS' && system !== 'PARTNER_PANEL') {
+      return c.json({ error: "Invalid system. Use 'OMS' or 'PARTNER_PANEL'" }, 400);
+    }
+    
+    const days = parseInt(c.req.query('days') || '7');
+    const tabPerformance = await fetchTabPerformance(system as 'OMS' | 'PARTNER_PANEL', days);
+    return c.json(tabPerformance);
+  } catch (error) {
+    console.error('Error in /api/tab-performance:', error);
+    return c.json({ error: "Failed to fetch tab performance" }, 500);
+  }
+});
+
+// New API endpoint: Get recent failures for OMS and Partner Panel
+app.get("/api/recent-failures", async (c) => {
+  try {
+    const limit = parseInt(c.req.query('limit') || '20');
+    const failures = await fetchRecentFailures(limit);
+    return c.json(failures);
+  } catch (error) {
+    console.error('Error in /api/recent-failures:', error);
+    return c.json({ error: "Failed to fetch recent failures" }, 500);
   }
 });
 
@@ -375,17 +677,26 @@ app.get("/api/test-results/:platform", async (c) => {
       
       console.log(`Fetching today's desktop data from ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
 
-      // PRIORITY 1: Try raw_test_logs first (where Playwright sends data)
+      // PRIORITY 1: Try raw_test_logs first (where Playwright sends data) - Filter for Desktop Site
       const { data: rawLogs } = await supabase
         .from('raw_test_logs')
         .select('*')
         .gte('executed_at', startOfToday.toISOString())
         .lt('executed_at', endOfToday.toISOString())
-        .order('executed_at', { ascending: false })
-        .limit(1);
+        .order('executed_at', { ascending: false });
 
+      // Filter for Desktop Site data (not OMS or Partner Panel)
+      let desktopRawLog = null;
       if (rawLogs && rawLogs.length > 0) {
-        const rawPayload = rawLogs[0].raw_payload;
+        desktopRawLog = rawLogs.find(log => {
+          const system = log.raw_payload?.metadata?.system;
+          // Desktop Site data should not have system metadata or should be explicitly 'DESKTOP'
+          return !system || system === 'DESKTOP' || system === 'WEB';
+        });
+      }
+
+      if (desktopRawLog) {
+        const rawPayload = desktopRawLog.raw_payload;
         journeys = rawPayload?.journeys || [];
         
         latestRun = {
@@ -406,18 +717,23 @@ app.get("/api/test-results/:platform", async (c) => {
         };
       }
 
-      // PRIORITY 2: Try test_runs + journeys tables for today
+      // PRIORITY 2: Try test_runs + journeys tables for Desktop Site
       if (!latestRun) {
         const { data: testRuns } = await supabase
           .from('test_runs')
           .select('*')
           .gte('executed_at', startOfToday.toISOString())
           .lt('executed_at', endOfToday.toISOString())
-          .order('executed_at', { ascending: false })
-          .limit(1);
+          .order('executed_at', { ascending: false });
 
-        if (testRuns && testRuns.length > 0) {
-          latestRun = testRuns[0];
+        // Filter for Desktop Site runs (not OMS or Partner Panel)
+        const desktopRuns = testRuns?.filter(run => {
+          const system = run.metadata?.system;
+          return !system || system === 'DESKTOP' || system === 'WEB';
+        }) || [];
+
+        if (desktopRuns.length > 0) {
+          latestRun = desktopRuns[0];
           
           const { data: journeyData } = await supabase
             .from('journeys')
@@ -515,7 +831,173 @@ app.get("/api/test-results/:platform", async (c) => {
       });
     }
 
-    // For all other platforms, return mock data
+    // For OMS, fetch from Supabase
+    if (platform === 'oms') {
+      console.log('Fetching OMS platform data...');
+      try {
+        const omsRunData = await fetchLatestSystemRun('OMS');
+        if (omsRunData && omsRunData.latestRun) {
+          const omsJourneys = omsRunData.journeys;
+          const omsModules = omsJourneys.map((journey: any) => {
+            const steps = journey.steps || [];
+            return {
+              journeyNumber: journey.journey_number,
+              name: journey.journey_name || `Journey ${journey.journey_number}`,
+              status: journey.status,
+              statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+              totalSteps: steps.length || journey.total_steps || 0,
+              passed: steps.filter((s: any) => s.status === 'PASSED').length || journey.passed_steps || 0,
+              failed: steps.filter((s: any) => s.status === 'FAILED').length || journey.failed_steps || 0,
+              duration: Math.round((journey.duration_ms || 0) / 1000),
+              durationFormatted: formatDuration(journey.duration_ms || 0),
+              failureReason: journey.failure_reason,
+              errorType: journey.error_type,
+              errorMessage: journey.error_message,
+              steps: steps.map((step: any, index: number) => ({
+                stepNumber: step.step_number || index + 1,
+                name: step.step_name || 'Unknown Step',
+                status: step.status,
+                statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+                duration: step.duration_ms || 0,
+                durationFormatted: formatDuration(step.duration_ms || 0),
+                timestamp: step.start_time,
+                errorType: step.error_type,
+                errorMessage: step.error_message,
+                apiCalls: step.api_calls || []
+              }))
+            };
+          });
+
+          const omsRun = omsRunData.latestRun;
+          const totalJourneys = omsJourneys.length;
+          const passedJourneys = omsJourneys.filter((j: any) => j.status === 'PASSED').length;
+          const failedJourneys = omsJourneys.filter((j: any) => j.status === 'FAILED').length;
+          
+          let totalSteps = 0, passedSteps = 0, failedSteps = 0;
+          omsJourneys.forEach((j: any) => {
+            const steps = j.steps || [];
+            totalSteps += steps.length;
+            passedSteps += steps.filter((s: any) => s.status === 'PASSED').length;
+            failedSteps += steps.filter((s: any) => s.status === 'FAILED').length;
+          });
+
+          if (omsRun.total_steps > 0) {
+            totalSteps = omsRun.total_steps;
+            passedSteps = omsRun.passed_steps;
+            failedSteps = omsRun.failed_steps;
+          }
+
+          const successRate = totalSteps > 0 ? ((passedSteps / totalSteps) * 100).toFixed(1) : '0';
+
+          return c.json({
+            total: totalJourneys,
+            passed: passedJourneys,
+            failed: failedJourneys,
+            skipped: omsRun.skipped_journeys || 0,
+            totalSteps,
+            passedSteps,
+            failedSteps,
+            successRate: parseFloat(successRate),
+            duration: Math.round((omsRun.total_runtime_ms || 0) / 1000),
+            durationFormatted: formatDuration(omsRun.total_runtime_ms || 0),
+            lastRun: omsRun.executed_at,
+            buildNumber: omsRun.build_number,
+            reportUrl: omsRun.report_url,
+            environment: omsRun.environment || 'prod',
+            modules: omsModules,
+            overallStatus: failedJourneys === 0 ? 'ALL SYSTEMS GO ✅' : 'ISSUES DETECTED ❌',
+            isSuccess: failedJourneys === 0 && passedJourneys > 0
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching OMS platform data:', error);
+      }
+    }
+
+    // For Partner Panel (mapped to android), fetch from Supabase
+    if (platform === 'android') {
+      console.log('Fetching Partner Panel platform data...');
+      try {
+        const ppRunData = await fetchLatestSystemRun('PARTNER_PANEL');
+        if (ppRunData && ppRunData.latestRun) {
+          const ppJourneys = ppRunData.journeys;
+          const ppModules = ppJourneys.map((journey: any) => {
+            const steps = journey.steps || [];
+            return {
+              journeyNumber: journey.journey_number,
+              name: journey.journey_name || `Journey ${journey.journey_number}`,
+              status: journey.status,
+              statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+              totalSteps: steps.length || journey.total_steps || 0,
+              passed: steps.filter((s: any) => s.status === 'PASSED').length || journey.passed_steps || 0,
+              failed: steps.filter((s: any) => s.status === 'FAILED').length || journey.failed_steps || 0,
+              duration: Math.round((journey.duration_ms || 0) / 1000),
+              durationFormatted: formatDuration(journey.duration_ms || 0),
+              failureReason: journey.failure_reason,
+              errorType: journey.error_type,
+              errorMessage: journey.error_message,
+              steps: steps.map((step: any, index: number) => ({
+                stepNumber: step.step_number || index + 1,
+                name: step.step_name || 'Unknown Step',
+                status: step.status,
+                statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+                duration: step.duration_ms || 0,
+                durationFormatted: formatDuration(step.duration_ms || 0),
+                timestamp: step.start_time,
+                errorType: step.error_type,
+                errorMessage: step.error_message,
+                apiCalls: step.api_calls || []
+              }))
+            };
+          });
+
+          const ppRun = ppRunData.latestRun;
+          const totalJourneys = ppJourneys.length;
+          const passedJourneys = ppJourneys.filter((j: any) => j.status === 'PASSED').length;
+          const failedJourneys = ppJourneys.filter((j: any) => j.status === 'FAILED').length;
+          
+          let totalSteps = 0, passedSteps = 0, failedSteps = 0;
+          ppJourneys.forEach((j: any) => {
+            const steps = j.steps || [];
+            totalSteps += steps.length;
+            passedSteps += steps.filter((s: any) => s.status === 'PASSED').length;
+            failedSteps += steps.filter((s: any) => s.status === 'FAILED').length;
+          });
+
+          if (ppRun.total_steps > 0) {
+            totalSteps = ppRun.total_steps;
+            passedSteps = ppRun.passed_steps;
+            failedSteps = ppRun.failed_steps;
+          }
+
+          const successRate = totalSteps > 0 ? ((passedSteps / totalSteps) * 100).toFixed(1) : '0';
+
+          return c.json({
+            total: totalJourneys,
+            passed: passedJourneys,
+            failed: failedJourneys,
+            skipped: ppRun.skipped_journeys || 0,
+            totalSteps,
+            passedSteps,
+            failedSteps,
+            successRate: parseFloat(successRate),
+            duration: Math.round((ppRun.total_runtime_ms || 0) / 1000),
+            durationFormatted: formatDuration(ppRun.total_runtime_ms || 0),
+            lastRun: ppRun.executed_at,
+            buildNumber: ppRun.build_number,
+            reportUrl: ppRun.report_url,
+            environment: ppRun.environment || 'prod',
+            modules: ppModules,
+            overallStatus: failedJourneys === 0 ? 'ALL SYSTEMS GO ✅' : 'ISSUES DETECTED ❌',
+            isSuccess: failedJourneys === 0 && passedJourneys > 0
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching Partner Panel platform data:', error);
+      }
+    }
+
+    // For all other platforms (mobile, ios), return mock data
     const mockResults = generateMockTestResults();
     if (!mockResults[platform as keyof typeof mockResults]) {
       return c.json({ error: "Platform not found" }, 404);
@@ -1527,12 +2009,11 @@ app.get("/", (c) => {
                 </div>
                 <div class="header-controls">
                     <div style="font-size: 12px; color: var(--text-secondary); margin-right: 15px; text-align: right;">
-                        <div>📅 Today's Data</div>
                         <div id="currentDate" style="font-weight: 600; color: var(--text-primary);"></div>
                     </div>
                     <div class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark/Light Mode"></div>
                     <button class="btn btn-primary" onclick="refreshData()" title="Fetch today's latest test data from Supabase (Ctrl+R)">
-                        <i class="fas fa-sync-alt"></i> Refresh Today's Data
+                        <i class="fas fa-sync-alt"></i> Refresh
                     </button>
                 </div>
             </div>

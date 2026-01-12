@@ -3,20 +3,62 @@ let testData = {};
 let currentPlatform = "desktop";
 let lastRefreshTime = Date.now();
 
+// Debug: Log when script loads
+console.log("🚀 Dashboard script loaded!");
+console.log("📊 Axios available:", typeof axios !== 'undefined');
+
+// Initialize on page load
+document.addEventListener("DOMContentLoaded", () => {
+  console.log("🌐 DOM Content Loaded, starting initialization...");
+  
+  // Test basic DOM manipulation
+  const testElement = document.getElementById('liveStatsGrid');
+  if (testElement) {
+    console.log("✅ Found liveStatsGrid element");
+    testElement.innerHTML = '<div style="padding: 20px; background: #f0f0f0; border-radius: 8px; text-align: center;">🔧 JavaScript is working! Loading data...</div>';
+  } else {
+    console.log("❌ Could not find liveStatsGrid element");
+  }
+  
+  // Initialize dashboard
+  initTheme();
+  updateCurrentDate();
+  initDashboard();
+});
+
 // Initialize dashboard
 async function initDashboard() {
+  console.log("🔄 Initializing dashboard...");
+  
+  // Test DOM elements
+  const liveStatsGrid = document.getElementById('liveStatsGrid');
+  const statsGrid = document.getElementById('statsGrid');
+  const modulesGrid = document.getElementById('modulesGrid');
+  
+  console.log("📋 DOM Elements Check:");
+  console.log("  liveStatsGrid:", liveStatsGrid ? "✅ Found" : "❌ Missing");
+  console.log("  statsGrid:", statsGrid ? "✅ Found" : "❌ Missing");
+  console.log("  modulesGrid:", modulesGrid ? "✅ Found" : "❌ Missing");
+  
   try {
     showLoading();
+    console.log("📡 Loading data...");
     await loadData();
+    console.log("📈 Rendering live stats...");
     renderLiveStats();
+    console.log("📊 Rendering stats...");
     renderStats();
+    console.log("📉 Rendering charts...");
     renderCharts();
+    console.log("🎯 Showing modules...");
     showModules("desktop");
     startLiveUpdateTimer();
     lastRefreshTime = Date.now();
+    console.log("✅ Dashboard initialized successfully!");
   } catch (error) {
-    console.error("Error initializing dashboard:", error);
-    alert("Failed to initialize dashboard. Please refresh the page.");
+    console.error("❌ Error initializing dashboard:", error);
+    console.error("❌ Error stack:", error.stack);
+    alert("Failed to initialize dashboard. Check console for details.");
   } finally {
     hideLoading();
   }
@@ -24,9 +66,11 @@ async function initDashboard() {
 
 // Load test data from Supabase API
 async function loadData() {
+  console.log("🔍 Starting loadData function...");
   try {
     // Add cache-busting parameter and timeout
     const timestamp = Date.now();
+    console.log("📡 Making API request to /api/test-results...");
     const response = await axios.get(`/api/test-results?_t=${timestamp}`, {
       timeout: 10000, // 10 second timeout
       headers: {
@@ -35,15 +79,15 @@ async function loadData() {
       }
     });
     testData = response.data;
-    console.log("Loaded test data:", testData);
+    console.log("✅ Loaded test data successfully:", testData);
   } catch (error) {
-    console.error("Error loading data:", error);
+    console.error("❌ Error loading data:", error);
     // Only fallback to mock data if we don't have any existing data
     if (!testData || Object.keys(testData).length === 0) {
-      console.log("Falling back to mock data");
+      console.log("🔄 Falling back to mock data");
       testData = generateMockData();
     } else {
-      console.log("Using cached data due to fetch error");
+      console.log("📦 Using cached data due to fetch error");
     }
   }
 }
@@ -69,10 +113,16 @@ function formatDuration(ms) {
   return `${minutes}m ${seconds}s`;
 }
 
-// Render live stats cards with real Supabase data for Desktop
+// Render live stats cards with real Supabase data for Desktop, OMS, and Partner Panel
 function renderLiveStats() {
   const liveStatsGrid = document.getElementById("liveStatsGrid");
   const desktopData = testData.desktop || {};
+  const omsData = testData.oms || {};
+  const partnerPanelData = testData.android || {}; // Partner Panel data is mapped to android
+  
+  // Debug logging to see what data we're working with
+  console.log("renderLiveStats - OMS data:", omsData);
+  console.log("renderLiveStats - Partner Panel data:", partnerPanelData);
   
   // Calculate Desktop stats from real data
   const desktopJourneys = desktopData.total || 0;
@@ -81,6 +131,25 @@ function renderLiveStats() {
   const desktopDuration = desktopData.durationFormatted || formatDuration(desktopData.duration * 1000);
   const desktopFailed = desktopData.failed || 0;
   const desktopAvgStepTime = desktopSteps > 0 ? ((desktopData.duration * 1000) / desktopSteps).toFixed(1) : '0';
+
+  // Calculate OMS stats from real data
+  const omsJourneys = omsData.total || 0;
+  const omsSteps = omsData.totalSteps || 0;
+  const omsSuccessRate = omsData.successRate || 0;
+  const omsDuration = omsData.durationFormatted || formatDuration((omsData.duration || 0) * 1000);
+  const omsFailed = omsData.failed || 0;
+  const omsAvgStepTime = omsSteps > 0 ? (((omsData.duration || 0) * 1000) / omsSteps).toFixed(1) : '0';
+
+  // Calculate Partner Panel stats from real data
+  const ppJourneys = partnerPanelData.total || 0;
+  const ppSteps = partnerPanelData.totalSteps || 0;
+  const ppSuccessRate = partnerPanelData.successRate || 0;
+  const ppDuration = partnerPanelData.durationFormatted || formatDuration((partnerPanelData.duration || 0) * 1000);
+  const ppFailed = partnerPanelData.failed || 0;
+  const ppAvgStepTime = ppSteps > 0 ? (((partnerPanelData.duration || 0) * 1000) / ppSteps).toFixed(1) : '0';
+
+  console.log("Calculated OMS stats:", { journeys: omsJourneys, steps: omsSteps, successRate: omsSuccessRate, duration: omsDuration, failed: omsFailed });
+  console.log("Calculated PP stats:", { journeys: ppJourneys, steps: ppSteps, successRate: ppSuccessRate, duration: ppDuration, failed: ppFailed });
 
   const platforms = [
     {
@@ -119,13 +188,15 @@ function renderLiveStats() {
       icon: '<i class="fas fa-server"></i>',
       suite: "FNP OMS Automation - Playwright Test Suite",
       platform: "ADMIN PANEL",
-      environment: "prod",
-      duration: "12ms",
-      journeys: 22,
-      steps: 187,
-      successRate: "99.2",
-      avgStepTime: "0.058",
-      failed: 1,
+      environment: omsData.environment || "prod",
+      duration: omsDuration,
+      journeys: omsJourneys,
+      steps: omsSteps,
+      successRate: omsSuccessRate.toFixed(1),
+      avgStepTime: omsAvgStepTime,
+      failed: omsFailed,
+      lastRun: omsData.lastRun,
+      isRealData: omsJourneys > 0 // Show as real data if we have journeys
     },
     {
       key: "android",
@@ -133,13 +204,15 @@ function renderLiveStats() {
       icon: '<i class="fas fa-handshake"></i>',
       suite: "FNP Partner Automation - Playwright Test Suite",
       platform: "PARTNER WEB",
-      environment: "prod",
-      duration: "9ms",
-      journeys: 15,
-      steps: 124,
-      successRate: "97.8",
-      avgStepTime: "0.061",
-      failed: 3,
+      environment: partnerPanelData.environment || "prod",
+      duration: ppDuration,
+      journeys: ppJourneys,
+      steps: ppSteps,
+      successRate: ppSuccessRate.toFixed(1),
+      avgStepTime: ppAvgStepTime,
+      failed: ppFailed,
+      lastRun: partnerPanelData.lastRun,
+      isRealData: ppJourneys > 0 // Show as real data if we have journeys
     },
     {
       key: "ios",
@@ -245,7 +318,7 @@ function renderStats() {
       <div class="stat-card" onclick="showModules('${platform.key}')">
         <div class="stat-icon ${platform.color}">${platform.icon}</div>
         <div class="stat-value">${total}</div>
-        <div class="stat-label">${platform.name} ${platform.key === 'desktop' ? '(Journeys)' : ''}</div>
+        <div class="stat-label">${platform.name}</div>
         <div class="stat-details">
           <div class="stat-detail"><span class="badge badge-success">✓ ${passed}</span></div>
           <div class="stat-detail"><span class="badge badge-danger">✗ ${failed}</span></div>
@@ -444,8 +517,8 @@ function showModules(platform, clickEvent) {
     return;
   }
 
-  // For Desktop, show journeys with expandable steps
-  if (platform === 'desktop') {
+  // For Desktop, OMS, and Partner Panel (android), show journeys with expandable steps
+  if (platform === 'desktop' || platform === 'oms' || platform === 'android') {
     modulesGrid.innerHTML = modules.map((module, index) => {
       const statusIcon = module.statusIcon || (module.status === 'PASSED' ? '✅' : module.status === 'FAILED' ? '❌' : '⚪');
       const statusColor = module.status === 'PASSED' ? '#10b981' : module.status === 'FAILED' ? '#ef4444' : '#6b7280';
@@ -480,11 +553,16 @@ function showModules(platform, clickEvent) {
         `;
       }
 
+      // Platform-specific titles
+      let platformTitle = 'Journey';
+      if (platform === 'oms') platformTitle = 'OMS Journey';
+      if (platform === 'android') platformTitle = 'Partner Panel Journey';
+
       return `
         <div class="module-card" style="border-left-color: ${statusColor};">
           <div style="display: flex; justify-content: space-between; align-items: flex-start;">
             <div class="module-name" style="flex: 1;">
-              ${statusIcon} Journey ${journeyNum}: ${module.name || 'Unknown Journey'}
+              ${statusIcon} ${platformTitle} ${journeyNum}: ${module.name || 'Unknown Journey'}
             </div>
             <span style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: ${module.status === 'PASSED' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${statusColor}; font-weight: 600;">
               ${module.status || 'UNKNOWN'}
