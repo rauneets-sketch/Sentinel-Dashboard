@@ -128,12 +128,13 @@ app.get("/api/test-results", async (c) => {
     let omsData: any = null;
     let partnerPanelData: any = null;
 
-    // Get today's date range (start and end of today in UTC)
+    // Get recent data range, prioritizing January 12th (yesterday)
     const today = new Date();
-    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const yesterday = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); // January 12th
+    const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000); // January 11th
     const endOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
     
-    console.log(`Fetching today's data from ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
+    console.log(`Prioritizing January 12th data from ${twoDaysAgo.toISOString()} to ${endOfToday.toISOString()}`);
 
     // DESKTOP SITE DATA - Find the real Desktop Site data (not OMS or Partner Panel)
     // PRIORITY 1: Try raw_test_logs table first (this is where Playwright sends data)
@@ -141,7 +142,7 @@ app.get("/api/test-results", async (c) => {
     const { data: rawLogs, error: rawError } = await supabase
       .from('raw_test_logs')
       .select('*')
-      .gte('executed_at', startOfToday.toISOString())
+      .gte('executed_at', twoDaysAgo.toISOString())
       .lt('executed_at', endOfToday.toISOString())
       .order('executed_at', { ascending: false });
 
@@ -162,13 +163,31 @@ app.get("/api/test-results", async (c) => {
     // Look for Desktop Site data - it might not have system metadata or could be the one with most journeys
     let desktopRawLog = null;
     if (rawLogs && rawLogs.length > 0) {
-      // First try to find data without system metadata (likely Desktop Site)
-      desktopRawLog = rawLogs.find(log => {
+      console.log('📋 Available raw logs by date:');
+      rawLogs.forEach((log, index) => {
         const system = log.raw_payload?.metadata?.system;
-        return !system;
+        const journeyCount = log.raw_payload?.journeys?.length || 0;
+        const date = new Date(log.executed_at).toLocaleDateString();
+        console.log(`  ${index + 1}. Date: ${date}, System: ${system || 'NO_SYSTEM'}, Journeys: ${journeyCount}, Run ID: ${log.raw_payload?.run_id}`);
       });
       
-      // If not found, look for the one with the most journeys (likely Desktop Site with 19 journeys)
+      // First try to find January 12th data without system metadata (likely Desktop Site)
+      desktopRawLog = rawLogs.find(log => {
+        const system = log.raw_payload?.metadata?.system;
+        const logDate = new Date(log.executed_at);
+        const isJan12 = logDate.getDate() === 12 && logDate.getMonth() === 0; // January is month 0
+        return !system && isJan12;
+      });
+      
+      // If no January 12th data, look for any recent Desktop Site data (no system metadata)
+      if (!desktopRawLog) {
+        desktopRawLog = rawLogs.find(log => {
+          const system = log.raw_payload?.metadata?.system;
+          return !system;
+        });
+      }
+      
+      // If still not found, look for the most recent data with the most journeys (likely Desktop Site)
       if (!desktopRawLog) {
         desktopRawLog = rawLogs.reduce((max, log) => {
           const journeyCount = log.raw_payload?.journeys?.length || 0;
@@ -223,7 +242,7 @@ app.get("/api/test-results", async (c) => {
       const { data: testRuns } = await supabase
         .from('test_runs')
         .select('*')
-        .gte('executed_at', startOfToday.toISOString())
+        .gte('executed_at', twoDaysAgo.toISOString())
         .lt('executed_at', endOfToday.toISOString())
         .order('executed_at', { ascending: false });
 
@@ -453,7 +472,7 @@ app.get("/api/test-results", async (c) => {
     // DESKTOP SITE DATA PROCESSING (existing logic continues...)
     // If still no desktop data, return mock data for desktop
     if (!latestRun || journeys.length === 0) {
-      console.log('No Supabase data found for today, using mock data for desktop');
+      console.log('No Supabase data found in recent days, using mock data for desktop');
       const desktopData = mockResults.desktop;
       
       return c.json({
@@ -468,67 +487,126 @@ app.get("/api/test-results", async (c) => {
     // Transform journeys to match Slack notification format exactly
     const desktopModules = journeys.map((journey: any) => {
       // Steps can be in journey.steps (from raw_payload) or need to be fetched
-      const steps = journey.steps || [];
-      const passedSteps = steps.filter((s: any) => s.status === 'PASSED').length;
-      const failedSteps = steps.filter((s: any) => s.status === 'FAILED').length;
+      const allSteps = journey.steps || [];
       
-      return {
-        // Journey identification (matching Slack format)
-        journeyNumber: journey.journey_number || journey.journeyNumber,
-        name: journey.journey_name || journey.journeyName || journey.name,
-        description: journey.journey_description || journey.journeyDescription,
+      // IMPORTANT: Split steps into separate journeys based on logical boundaries
+      // Journey boundaries are identified by "PNC Created Successfully" or "Order Completion" steps
+      const journeyBoundaries = [];
+      let currentJourneySteps = [];
+      let journeyNumber = 1;
+      
+      allSteps.forEach((step: any, index: number) => {
+        currentJourneySteps.push(step);
         
-        // Status with icons (matching Slack format)
-        status: journey.status,
-        statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+        // Check if this step marks the end of a journey (PNC creation, order completion, etc.)
+        const stepName = step.step_name || step.stepName || step.name || '';
+        const isJourneyEnd = stepName.includes('PNC Created Successfully') || 
+                           stepName.includes('Order Completion') ||
+                           stepName.includes('All Payment Methods Tested') ||
+                           stepName.includes('Phone Number Change Completed') ||
+                           stepName.includes('Reminder and FAQ Flow Completed');
         
-        // Step counts
-        totalSteps: steps.length || journey.total_steps || journey.totalSteps || 0,
-        passed: passedSteps || journey.passed_steps || journey.passedSteps || 0,
-        failed: failedSteps || journey.failed_steps || journey.failedSteps || 0,
+        if (isJourneyEnd || index === allSteps.length - 1) {
+          // Create a journey from current steps
+          const passedSteps = currentJourneySteps.filter((s: any) => s.status === 'PASSED').length;
+          const failedSteps = currentJourneySteps.filter((s: any) => s.status === 'FAILED').length;
+          const journeyDuration = currentJourneySteps.reduce((sum, s) => sum + (s.duration_ms || s.durationMs || 0), 0);
+          const journeyStatus = failedSteps > 0 ? 'FAILED' : 'PASSED';
+          
+          // Determine journey name based on step content
+          let journeyName = `Journey ${journeyNumber}`;
+          if (journeyNumber === 1) journeyName = "User Authentication & Product Selection";
+          else if (journeyNumber === 2) journeyName = "Payment Methods Testing";
+          else if (journeyNumber === 3) journeyName = "Profile & Address Management";
+          else if (journeyNumber === 4) journeyName = "International & Advanced Features";
+          
+          journeyBoundaries.push({
+            journeyNumber: journeyNumber,
+            name: journeyName,
+            description: `Journey ${journeyNumber} - Steps ${currentJourneySteps[0].step_number || currentJourneySteps[0].stepNumber || (journeyBoundaries.length * 10 + 1)} to ${currentJourneySteps[currentJourneySteps.length - 1].step_number || currentJourneySteps[currentJourneySteps.length - 1].stepNumber || (journeyBoundaries.length * 10 + currentJourneySteps.length)}`,
+            status: journeyStatus,
+            statusIcon: journeyStatus === 'PASSED' ? '✅' : '❌',
+            totalSteps: currentJourneySteps.length,
+            passed: passedSteps,
+            failed: failedSteps,
+            duration: Math.round(journeyDuration / 1000),
+            durationFormatted: formatDuration(journeyDuration),
+            failureReason: failedSteps > 0 ? currentJourneySteps.find(s => s.status === 'FAILED')?.error_message || 'Step failed' : null,
+            errorType: failedSteps > 0 ? currentJourneySteps.find(s => s.status === 'FAILED')?.error_type : null,
+            errorMessage: failedSteps > 0 ? currentJourneySteps.find(s => s.status === 'FAILED')?.error_message : null,
+            steps: currentJourneySteps.map((step: any, stepIdx: number) => ({
+              stepNumber: step.step_number || step.stepNumber || stepIdx + 1,
+              name: step.step_name || step.stepName || step.name || 'Unknown Step',
+              status: step.status,
+              statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+              duration: step.duration_ms || step.durationMs || step.duration || 0,
+              durationFormatted: formatDuration(step.duration_ms || step.durationMs || step.duration || 0),
+              timestamp: step.start_time || step.startTime || step.timestamp,
+              errorType: step.error_type || step.errorType || null,
+              errorMessage: step.error_message || step.errorMessage || null,
+              apiCalls: step.api_calls || step.apiCalls || []
+            }))
+          });
+          
+          // Reset for next journey
+          currentJourneySteps = [];
+          journeyNumber++;
+        }
+      });
+      
+      // If no journey boundaries found, treat as single journey but still return array
+      if (journeyBoundaries.length === 0) {
+        const passedSteps = allSteps.filter((s: any) => s.status === 'PASSED').length;
+        const failedSteps = allSteps.filter((s: any) => s.status === 'FAILED').length;
         
-        // Timing (matching Slack format)
-        duration: Math.round((journey.duration_ms || journey.durationMs || 0) / 1000),
-        durationFormatted: formatDuration(journey.duration_ms || journey.durationMs || 0),
-        
-        // Error details for failed journeys (matching Slack format)
-        failureReason: journey.failure_reason || journey.failureReason || null,
-        errorType: journey.error_type || journey.errorType || null,
-        errorMessage: journey.error_message || journey.errorMessage || null,
-        
-        // Individual steps with full details (matching Slack journeySteps format)
-        steps: steps.map((step: any, index: number) => ({
-          stepNumber: step.step_number || step.stepNumber || index + 1,
-          name: step.step_name || step.stepName || step.name || 'Unknown Step',
-          status: step.status,
-          statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
-          duration: step.duration_ms || step.durationMs || step.duration || 0,
-          durationFormatted: formatDuration(step.duration_ms || step.durationMs || step.duration || 0),
-          timestamp: step.start_time || step.startTime || step.timestamp,
-          errorType: step.error_type || step.errorType || null,
-          errorMessage: step.error_message || step.errorMessage || null,
-          apiCalls: step.api_calls || step.apiCalls || []
-        }))
-      };
-    });
+        return [{
+          journeyNumber: journey.journey_number || journey.journeyNumber || 1,
+          name: journey.journey_name || journey.journeyName || journey.name || 'Complete Journey Flow',
+          description: journey.journey_description || journey.journeyDescription || 'Complete test execution flow',
+          status: journey.status,
+          statusIcon: journey.status === 'PASSED' ? '✅' : journey.status === 'FAILED' ? '❌' : '⚪',
+          totalSteps: allSteps.length || journey.total_steps || journey.totalSteps || 0,
+          passed: passedSteps || journey.passed_steps || journey.passedSteps || 0,
+          failed: failedSteps || journey.failed_steps || journey.failedSteps || 0,
+          duration: Math.round((journey.duration_ms || journey.durationMs || 0) / 1000),
+          durationFormatted: formatDuration(journey.duration_ms || journey.durationMs || 0),
+          failureReason: journey.failure_reason || journey.failureReason || null,
+          errorType: journey.error_type || journey.errorType || null,
+          errorMessage: journey.error_message || journey.errorMessage || null,
+          steps: allSteps.map((step: any, index: number) => ({
+            stepNumber: step.step_number || step.stepNumber || index + 1,
+            name: step.step_name || step.stepName || step.name || 'Unknown Step',
+            status: step.status,
+            statusIcon: step.status === 'PASSED' ? '✅' : step.status === 'FAILED' ? '❌' : '⚪',
+            duration: step.duration_ms || step.durationMs || step.duration || 0,
+            durationFormatted: formatDuration(step.duration_ms || step.durationMs || step.duration || 0),
+            timestamp: step.start_time || step.startTime || step.timestamp,
+            errorType: step.error_type || step.errorType || null,
+            errorMessage: step.error_message || step.errorMessage || null,
+            apiCalls: step.api_calls || step.apiCalls || []
+          }))
+        }];
+      }
+      
+      return journeyBoundaries;
+    }).flat(); // Flatten array since each journey can now produce multiple sub-journeys
 
-    // Calculate totals from journeys
-    const totalJourneys = journeys.length;
-    const passedJourneys = journeys.filter((j: any) => j.status === 'PASSED').length;
-    const failedJourneys = journeys.filter((j: any) => j.status === 'FAILED').length;
+    // Calculate totals from the split journeys
+    const totalJourneys = desktopModules.length;
+    const passedJourneys = desktopModules.filter((j: any) => j.status === 'PASSED').length;
+    const failedJourneys = desktopModules.filter((j: any) => j.status === 'FAILED').length;
     
-    // Calculate step totals
+    // Calculate step totals across all journeys
     let totalSteps = 0;
     let passedSteps = 0;
     let failedSteps = 0;
-    journeys.forEach((j: any) => {
-      const steps = j.steps || [];
-      totalSteps += steps.length;
-      passedSteps += steps.filter((s: any) => s.status === 'PASSED').length;
-      failedSteps += steps.filter((s: any) => s.status === 'FAILED').length;
+    desktopModules.forEach((j: any) => {
+      totalSteps += j.totalSteps || 0;
+      passedSteps += j.passed || 0;
+      failedSteps += j.failed || 0;
     });
 
-    // Use summary from payload if available, otherwise calculate
+    // Use summary from payload if available, otherwise use calculated values
     if (latestRun.total_steps > 0) {
       totalSteps = latestRun.total_steps;
       passedSteps = latestRun.passed_steps;
@@ -540,7 +618,7 @@ app.get("/api/test-results", async (c) => {
 
     // Desktop data matching Slack notification structure exactly
     const desktopData = {
-      // Summary stats (matching Slack header format)
+      // Summary stats (matching Slack header format) - now shows split journeys
       total: totalJourneys,
       passed: passedJourneys,
       failed: failedJourneys,
@@ -647,6 +725,175 @@ app.get("/api/recent-failures", async (c) => {
   }
 });
 
+// New endpoint: Get screenshots for test runs (FAILURES ONLY)
+app.get("/api/screenshots", async (c) => {
+  try {
+    const platform = c.req.query('platform') || 'all';
+    const limit = parseInt(c.req.query('limit') || '50');
+    
+    // Get recent data range (last 7 days)
+    const today = new Date();
+    const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    console.log(`Fetching FAILURE screenshots for platform: ${platform}`);
+    
+    // Query ONLY FAILED steps that have screenshot URLs
+    const { data: screenshotSteps, error } = await supabase
+      .from('steps')
+      .select(`
+        *,
+        journeys!inner(journey_name, journey_number, run_id, status),
+        test_runs!inner(metadata, executed_at, environment)
+      `)
+      .eq('status', 'FAILED')  // Only failed steps
+      .not('metadata->>screenshot_url', 'is', null)
+      .gte('created_at', sevenDaysAgo.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('Error fetching failure screenshots:', error);
+      return c.json({ error: "Failed to fetch failure screenshots" }, 500);
+    }
+
+    // Process and organize failure screenshots
+    const screenshots = (screenshotSteps || []).map((step: any) => {
+      const system = step.test_runs?.metadata?.system || 'Desktop Site';
+      const screenshotUrl = step.metadata?.screenshot_url;
+      
+      return {
+        id: step.step_id,
+        stepName: step.step_name,
+        stepNumber: step.step_number,
+        journeyName: step.journeys?.journey_name,
+        journeyNumber: step.journeys?.journey_number,
+        runId: step.journeys?.run_id,
+        system: system,
+        platform: system === 'OMS' ? 'oms' : system === 'PARTNER_PANEL' ? 'android' : 'desktop',
+        status: 'FAILED', // All screenshots are from failures
+        screenshotUrl: screenshotUrl,
+        timestamp: step.created_at,
+        executedAt: step.test_runs?.executed_at,
+        environment: step.test_runs?.environment || 'dev',
+        errorMessage: step.error_message,
+        errorType: step.error_type,
+        duration: step.duration_ms,
+        // Additional failure context
+        failureContext: {
+          beforeFailure: step.metadata?.before_failure_screenshot,
+          afterFailure: step.metadata?.after_failure_screenshot,
+          pageUrl: step.metadata?.page_url,
+          selector: step.metadata?.failed_selector,
+          expectedValue: step.metadata?.expected_value,
+          actualValue: step.metadata?.actual_value
+        }
+      };
+    });
+
+    // Filter by platform if specified
+    const filteredScreenshots = platform === 'all' 
+      ? screenshots 
+      : screenshots.filter(s => s.platform === platform);
+
+    // Group by system for better organization
+    const groupedScreenshots = filteredScreenshots.reduce((acc: any, screenshot: any) => {
+      const system = screenshot.system;
+      if (!acc[system]) {
+        acc[system] = [];
+      }
+      acc[system].push(screenshot);
+      return acc;
+    }, {});
+
+    // Calculate failure statistics
+    const failureStats = {
+      totalFailures: filteredScreenshots.length,
+      bySystem: Object.keys(groupedScreenshots).map(system => ({
+        system,
+        count: groupedScreenshots[system].length,
+        latestFailure: groupedScreenshots[system][0]?.timestamp
+      })),
+      commonErrors: filteredScreenshots.reduce((acc: any, screenshot: any) => {
+        const errorType = screenshot.errorType || 'Unknown Error';
+        acc[errorType] = (acc[errorType] || 0) + 1;
+        return acc;
+      }, {}),
+      timeRange: {
+        from: sevenDaysAgo.toISOString(),
+        to: today.toISOString()
+      }
+    };
+
+    return c.json({
+      total: filteredScreenshots.length,
+      screenshots: filteredScreenshots,
+      groupedBySystem: groupedScreenshots,
+      platforms: [...new Set(screenshots.map(s => s.platform))],
+      systems: Object.keys(groupedScreenshots),
+      failureStats: failureStats
+    });
+  } catch (error) {
+    console.error('Error in /api/screenshots:', error);
+    return c.json({ error: "Failed to fetch failure screenshots" }, 500);
+  }
+});
+
+// New endpoint: Get failure screenshots for a specific journey
+app.get("/api/screenshots/journey/:runId/:journeyNumber", async (c) => {
+  try {
+    const runId = c.req.param("runId");
+    const journeyNumber = parseInt(c.req.param("journeyNumber"));
+    
+    console.log(`Fetching FAILURE screenshots for journey ${journeyNumber} in run ${runId}`);
+    
+    // Get ONLY FAILED journey screenshots
+    const { data: journeyScreenshots, error } = await supabase
+      .from('steps')
+      .select(`
+        *,
+        journeys!inner(journey_name, journey_number, run_id)
+      `)
+      .eq('journeys.run_id', runId)
+      .eq('journeys.journey_number', journeyNumber)
+      .eq('status', 'FAILED')  // Only failed steps
+      .not('metadata->>screenshot_url', 'is', null)
+      .order('step_number', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching journey failure screenshots:', error);
+      return c.json({ error: "Failed to fetch journey failure screenshots" }, 500);
+    }
+
+    const screenshots = (journeyScreenshots || []).map((step: any) => ({
+      stepNumber: step.step_number,
+      stepName: step.step_name,
+      status: 'FAILED',
+      screenshotUrl: step.metadata?.screenshot_url,
+      timestamp: step.created_at,
+      errorMessage: step.error_message,
+      errorType: step.error_type,
+      duration: step.duration_ms,
+      failureContext: {
+        pageUrl: step.metadata?.page_url,
+        selector: step.metadata?.failed_selector,
+        expectedValue: step.metadata?.expected_value,
+        actualValue: step.metadata?.actual_value
+      }
+    }));
+
+    return c.json({
+      runId,
+      journeyNumber,
+      journeyName: journeyScreenshots?.[0]?.journeys?.journey_name,
+      screenshots,
+      totalFailures: screenshots.length
+    });
+  } catch (error) {
+    console.error('Error fetching journey failure screenshots:', error);
+    return c.json({ error: "Failed to fetch journey failure screenshots" }, 500);
+  }
+});
+
 // Helper function to format duration (matching Slack format)
 function formatDuration(durationMs: number): string {
   if (!durationMs || durationMs <= 0) return '0ms';
@@ -670,18 +917,19 @@ app.get("/api/test-results/:platform", async (c) => {
       let latestRun: any = null;
       let journeys: any[] = [];
 
-      // Get today's date range (start and end of today in UTC)
+      // Get recent data range, prioritizing January 12th (yesterday)
       const today = new Date();
-      const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const yesterday = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); // January 12th
+      const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000); // January 11th
       const endOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
       
-      console.log(`Fetching today's desktop data from ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
+      console.log(`Prioritizing January 12th desktop data from ${twoDaysAgo.toISOString()} to ${endOfToday.toISOString()}`);
 
       // PRIORITY 1: Try raw_test_logs first (where Playwright sends data) - Filter for Desktop Site
       const { data: rawLogs } = await supabase
         .from('raw_test_logs')
         .select('*')
-        .gte('executed_at', startOfToday.toISOString())
+        .gte('executed_at', twoDaysAgo.toISOString())
         .lt('executed_at', endOfToday.toISOString())
         .order('executed_at', { ascending: false });
 
@@ -722,7 +970,7 @@ app.get("/api/test-results/:platform", async (c) => {
         const { data: testRuns } = await supabase
           .from('test_runs')
           .select('*')
-          .gte('executed_at', startOfToday.toISOString())
+          .gte('executed_at', twoDaysAgo.toISOString())
           .lt('executed_at', endOfToday.toISOString())
           .order('executed_at', { ascending: false });
 
@@ -1267,6 +1515,10 @@ app.get("/", (c) => {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Sentinel - Test Automation Dashboard</title>
+        <link rel="icon" type="image/svg+xml" href="/static/fnp-logo.svg">
+        <link rel="icon" type="image/png" href="/static/fnp-favicon.png">
+        <link rel="shortcut icon" href="/static/fnp-logo.svg">
+        <link rel="apple-touch-icon" href="/static/fnp-favicon.png">
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
         <script src="https://code.highcharts.com/highcharts.js"></script>
@@ -1895,6 +2147,38 @@ app.get("/", (c) => {
             .tooltip:hover .tooltiptext {
                 visibility: visible;
                 opacity: 1;
+            }
+            
+            .screenshot-card {
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }
+            
+            .screenshot-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 16px var(--shadow-hover) !important;
+            }
+            
+            .screenshot-card img {
+                transition: transform 0.2s ease;
+            }
+            
+            .screenshot-card:hover img {
+                transform: scale(1.02);
+            }
+            
+            .journey-steps {
+                animation: slideDown 0.3s ease-out;
+            }
+            
+            @keyframes slideDown {
+                from {
+                    opacity: 0;
+                    max-height: 0;
+                }
+                to {
+                    opacity: 1;
+                    max-height: 500px;
+                }
             }
             
             @media (max-width: 768px) {

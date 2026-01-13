@@ -580,9 +580,14 @@ function showModules(platform, clickEvent) {
           </div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
             <span style="font-size: 11px; color: #6B7280;">${successRate}% success (${totalSteps} steps)</span>
-            ${hasSteps ? `<button onclick="toggleSteps(${index})" style="font-size: 11px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--card-bg); cursor: pointer; color: var(--text-primary);">
-              <i class="fas fa-chevron-down" id="steps-icon-${index}"></i> View Steps
-            </button>` : ''}
+            <div style="display: flex; gap: 8px;">
+              ${hasSteps ? `<button onclick="toggleSteps(${index})" style="font-size: 11px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--card-bg); cursor: pointer; color: var(--text-primary);">
+                <i class="fas fa-chevron-down" id="steps-icon-${index}"></i> Steps
+              </button>` : ''}
+              ${module.status === 'FAILED' ? `<button onclick="showJourneyScreenshots('${platform}', ${journeyNum})" style="font-size: 11px; padding: 4px 8px; border: 1px solid #ef4444; border-radius: 4px; background: rgba(239, 68, 68, 0.1); cursor: pointer; color: #ef4444;">
+                <i class="fas fa-camera"></i> Screenshots
+              </button>` : ''}
+            </div>
           </div>
           ${stepsHtml}
         </div>
@@ -607,6 +612,227 @@ function showModules(platform, clickEvent) {
       `;
     }).join("");
   }
+}
+
+// Load and display screenshots (for individual journey use only)
+async function loadScreenshots(platform = 'all') {
+  try {
+    console.log(`Loading screenshots for platform: ${platform}`);
+    const response = await axios.get(`/api/screenshots?platform=${platform}&limit=50`);
+    return response.data;
+  } catch (error) {
+    console.error('Error loading screenshots:', error);
+    return { screenshots: [], total: 0 };
+  }
+}
+
+// Show screenshots for a specific FAILED journey
+async function showJourneyScreenshots(platform, journeyNumber) {
+  try {
+    // Get the journey data for the current platform
+    const data = testData[platform];
+    if (!data || !data.modules) return;
+    
+    const journey = data.modules.find(m => m.journeyNumber === journeyNumber);
+    if (!journey) return;
+    
+    // Only show screenshots for failed journeys
+    if (journey.status !== 'FAILED') {
+      console.log(`Journey ${journeyNumber} passed - no failure screenshots to show`);
+      return;
+    }
+    
+    console.log(`Showing failure screenshots for ${platform} journey ${journeyNumber}`);
+    
+    // Open a modal to show journey-specific failure screenshots
+    openJourneyFailureScreenshotsModal(platform, journeyNumber, journey.name, journey);
+    
+  } catch (error) {
+    console.error('Error showing journey failure screenshots:', error);
+  }
+}
+
+// Open failure screenshot modal with enhanced error context
+function openFailureScreenshotModal(imageUrl, stepName, journeyName, errorMessage, errorType) {
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+    background: rgba(0,0,0,0.95); z-index: 10000; display: flex; 
+    align-items: center; justify-content: center; cursor: pointer;
+    overflow-y: auto; padding: 20px;
+  `;
+  
+  modal.innerHTML = `
+    <div style="max-width: 90%; max-height: 90%; text-align: center; cursor: default;" onclick="event.stopPropagation()">
+      <div style="background: rgba(239, 68, 68, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid rgba(239, 68, 68, 0.3);">
+        <div style="color: #ef4444; margin-bottom: 10px; font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 10px;">
+          <i class="fas fa-exclamation-triangle"></i> Test Failure Screenshot
+        </div>
+        <div style="color: white; font-size: 16px; font-weight: 600; margin-bottom: 5px;">
+          ${stepName}
+        </div>
+        <div style="color: #ccc; font-size: 14px; margin-bottom: 15px;">
+          ${journeyName}
+        </div>
+        ${errorType ? `
+          <div style="color: #ef4444; font-size: 12px; margin-bottom: 8px;">
+            <strong>Error Type:</strong> ${errorType}
+          </div>
+        ` : ''}
+        <div style="color: #ef4444; font-size: 12px; text-align: left; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; max-height: 100px; overflow-y: auto;">
+          <strong>Error Message:</strong><br>
+          ${errorMessage || 'No error message available'}
+        </div>
+      </div>
+      
+      <img src="${imageUrl}" 
+           style="max-width: 100%; max-height: 60vh; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); border: 2px solid rgba(239, 68, 68, 0.5);"
+           alt="Failure screenshot">
+      
+      <div style="color: #ccc; margin-top: 15px; font-size: 12px;">
+        <i class="fas fa-info-circle"></i> This screenshot was captured when the test step failed
+      </div>
+      <div style="color: #ccc; margin-top: 5px; font-size: 12px;">
+        Click anywhere outside to close
+      </div>
+    </div>
+  `;
+  
+  modal.onclick = (e) => {
+    if (e.target === modal) {
+      document.body.removeChild(modal);
+    }
+  };
+  
+  document.body.appendChild(modal);
+}
+
+// Keep the original screenshot modal for backward compatibility
+function openScreenshotModal(imageUrl, stepName, journeyName) {
+  openFailureScreenshotModal(imageUrl, stepName, journeyName, '', '');
+}
+
+// Open journey failure screenshots modal
+function openJourneyFailureScreenshotsModal(platform, journeyNumber, journeyName, journeyData) {
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+    background: rgba(0,0,0,0.95); z-index: 10000; overflow-y: auto;
+    padding: 20px;
+  `;
+  
+  modal.innerHTML = `
+    <div style="max-width: 1200px; margin: 0 auto; color: white;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+        <div>
+          <h2 style="margin: 0; font-size: 24px; color: #ef4444; display: flex; align-items: center; gap: 10px;">
+            <i class="fas fa-exclamation-triangle"></i> Journey Failure Screenshots
+          </h2>
+          <p style="margin: 5px 0 0 0; color: #ccc; font-size: 16px;">${journeyName}</p>
+          <p style="margin: 5px 0 0 0; color: #888; font-size: 12px;">${platform.toUpperCase()} - Journey ${journeyNumber}</p>
+        </div>
+        <button onclick="document.body.removeChild(this.closest('.modal'))" 
+                style="background: #ef4444; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer;">
+          <i class="fas fa-times"></i> Close
+        </button>
+      </div>
+      
+      <div style="background: rgba(239, 68, 68, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid rgba(239, 68, 68, 0.3);">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; text-align: center;">
+          <div>
+            <div style="font-size: 20px; font-weight: 700; color: #ef4444;">${journeyData.failed || 0}</div>
+            <div style="font-size: 12px; color: #ccc;">Failed Steps</div>
+          </div>
+          <div>
+            <div style="font-size: 20px; font-weight: 700; color: #ef4444;">${journeyData.totalSteps || 0}</div>
+            <div style="font-size: 12px; color: #ccc;">Total Steps</div>
+          </div>
+          <div>
+            <div style="font-size: 20px; font-weight: 700; color: #ef4444;">${journeyData.duration || 0}s</div>
+            <div style="font-size: 12px; color: #ccc;">Duration</div>
+          </div>
+        </div>
+        ${journeyData.failureReason ? `
+          <div style="margin-top: 15px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+            <div style="font-size: 12px; color: #ef4444; font-weight: 600; margin-bottom: 5px;">Failure Reason:</div>
+            <div style="font-size: 11px; color: #ccc; line-height: 1.4;">${journeyData.failureReason}</div>
+          </div>
+        ` : ''}
+      </div>
+      
+      <div id="journey-failure-screenshots-content">
+        <div style="text-align: center; padding: 40px;">
+          <div class="spinner" style="margin: 0 auto 15px;"></div>
+          <div>Loading failure screenshots for this journey...</div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  modal.className = 'modal';
+  document.body.appendChild(modal);
+  
+  // Load journey failure screenshots
+  setTimeout(() => {
+    const content = document.getElementById('journey-failure-screenshots-content');
+    
+    // Check if the journey has failed steps with screenshots
+    const failedSteps = journeyData.steps ? journeyData.steps.filter(step => step.status === 'FAILED') : [];
+    
+    if (failedSteps.length === 0) {
+      content.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #ccc;">
+          <i class="fas fa-info-circle" style="font-size: 48px; margin-bottom: 15px; color: #ef4444;"></i>
+          <h3>No Failure Screenshots Available</h3>
+          <p>This journey failed but no screenshots were captured for the failed steps.</p>
+          <p style="font-size: 12px; margin-top: 20px;">
+            Screenshots are automatically captured when test steps fail, but may not be available for all failure types.
+          </p>
+        </div>
+      `;
+    } else {
+      // Show failed steps (placeholder for actual screenshot URLs)
+      content.innerHTML = `
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px;">
+          ${failedSteps.map((step, index) => `
+            <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 12px; padding: 16px;">
+              <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 12px;">
+                <div style="flex: 1;">
+                  <div style="font-size: 14px; font-weight: 600; color: #ef4444; margin-bottom: 4px;">
+                    ❌ Step ${step.stepNumber}: ${step.name}
+                  </div>
+                  <div style="font-size: 12px; color: #ccc;">
+                    Duration: ${step.durationFormatted || formatDuration(step.duration)}
+                  </div>
+                </div>
+              </div>
+              
+              <div style="background: rgba(0,0,0,0.3); border-radius: 8px; padding: 15px; margin-bottom: 12px; min-height: 150px; display: flex; align-items: center; justify-content: center; border: 2px dashed rgba(239, 68, 68, 0.5);">
+                <div style="text-align: center; color: #888;">
+                  <i class="fas fa-camera" style="font-size: 32px; margin-bottom: 10px; color: #ef4444;"></i>
+                  <div style="font-size: 12px;">Screenshot will be loaded here</div>
+                  <div style="font-size: 10px; margin-top: 5px;">when screenshot URLs are provided</div>
+                </div>
+              </div>
+              
+              ${step.errorMessage ? `
+                <div style="background: rgba(0,0,0,0.3); border-radius: 6px; padding: 10px;">
+                  <div style="font-size: 11px; color: #ef4444; font-weight: 600; margin-bottom: 5px;">Error Details:</div>
+                  <div style="font-size: 10px; color: #ccc; line-height: 1.4;">${step.errorMessage}</div>
+                </div>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+  }, 1000);
+}
+
+// Keep the original function for backward compatibility
+function openJourneyScreenshotsModal(platform, journeyNumber, journeyName) {
+  // This is now just a placeholder - the new function above handles failure screenshots
+  console.log('Use openJourneyFailureScreenshotsModal instead');
 }
 
 // Toggle steps visibility
