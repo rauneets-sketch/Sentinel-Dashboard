@@ -1,0 +1,13 @@
+<!-- This is a placeholder for the PNG favicon -->
+<!-- You can replace this with the actual FNP logo PNG file -->
+<!-- The SVG version above should work for most modern browsers -->
+
+To add your actual FNP logo:
+1. Save your FNP logo as "fnp-favicon.png" (32x32 pixels) in the public/static/ folder
+2. Or convert the SVG to PNG using an online converter
+3. The favicon will automatically appear in the browser tab
+
+Current setup uses:
+- SVG favicon (modern browsers)
+- PNG fallback (older browsers)
+- Apple touch icon (iOS devices)

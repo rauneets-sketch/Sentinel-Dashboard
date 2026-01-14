@@ -1,0 +1,14 @@
+loginButton:
+  android:
+    type: "id"
+    value: "com.example.app:id/login_button"
+
+usernameField:
+  android:
+    type: "id"
+    value: "com.example.app:id/username_input"
+
+passwordField:
+  android:
+    type: "id"
+    value: "com.example.app:id/password_input"

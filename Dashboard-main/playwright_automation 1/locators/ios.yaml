@@ -1,0 +1,14 @@
+loginButton:
+  ios:
+    type: "accessibility"
+    value: "login_button"
+
+usernameField:
+  ios:
+    type: "accessibility"
+    value: "username_field"
+
+passwordField:
+  ios:
+    type: "accessibility"
+    value: "password_field"
