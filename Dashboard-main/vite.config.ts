@@ -1,6 +1,3 @@
-import build from '@hono/vite-build/cloudflare-pages'
-import devServer from '@hono/vite-dev-server'
-import adapter from '@hono/vite-dev-server/cloudflare'
 import { defineConfig, loadEnv } from 'vite'
 
 export default defineConfig(({ mode }) => {
@@ -8,13 +5,9 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   
   return {
-    plugins: [
-      build(),
-      devServer({
-        adapter,
-        entry: 'src/index.tsx'
-      })
-    ],
+    build: {
+      outDir: 'dist'
+    },
     define: {
       // Make environment variables available to the application
       'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL),
